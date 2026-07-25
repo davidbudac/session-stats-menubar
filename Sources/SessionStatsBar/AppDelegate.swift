@@ -138,13 +138,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if ranked.contains(where: { !Pricing.rate(for: $0.model).known }) {
                 menu.addItem(disabled("Some models have no price on file — Opus rates assumed"))
             }
-
             var sessionLine = "\(snapshot.sessions.count) session"
                 + (snapshot.sessions.count == 1 ? "" : "s")
-            if !snapshot.liveSessions.isEmpty {
-                sessionLine += " · \(snapshot.liveSessions.count) active now"
+            let agentCount = snapshot.sessions.reduce(0) { $0 + $1.agents.count }
+            if agentCount > 0 {
+                sessionLine += " · \(agentCount) subagent" + (agentCount == 1 ? "" : "s")
             }
             menu.addItem(disabled(sessionLine))
+            addActiveSessions()
         }
 
         menu.addItem(.separator())
@@ -157,6 +158,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(login)
         menu.addItem(action("Quit Session Stats", #selector(quit), key: "q"))
     }
+
+    /// Sessions that wrote to their transcript in the last few minutes, each with
+    /// the subagents it spawned today. Bounded so a fan-out heavy day can't grow
+    /// the menu past the screen.
+    private func addActiveSessions() {
+        let live = snapshot.liveSessions
+        guard !live.isEmpty else { return }
+        menu.addItem(.separator())
+        menu.addItem(header("Running now"))
+
+        for session in live.prefix(Self.maxLiveSessions) {
+            let name = session.project.padding(toLength: 22, withPad: " ", startingAt: 0)
+            var line = "\(name) \(pad(Pricing.money(session.cost), 8))"
+                + " · \(pad(Fmt.compact(session.totals.output), 6)) out"
+            if let model = session.primaryModel { line += " · \(Fmt.shortModel(model))" }
+            menu.addItem(monospaced(line))
+
+            if session.agents.isEmpty {
+                menu.addItem(indented("no subagents", by: 2))
+                continue
+            }
+            let agentTotal = session.agentCost
+            let share = session.cost > 0 ? agentTotal / session.cost * 100 : 0
+            menu.addItem(indented(String(
+                format: "%d subagents · %@ (%.0f%% of session)",
+                session.agents.count, Pricing.money(agentTotal), share), by: 2))
+
+            for agent in session.agents.prefix(Self.maxAgentsPerSession) {
+                let mark = agent.isLive ? "●" : "·"
+                let label = agent.label.padding(toLength: 18, withPad: " ", startingAt: 0)
+                var line = "\(mark) \(label) \(pad(Pricing.money(agent.cost), 8))"
+                    + " · \(pad(Fmt.compact(agent.totals.output), 6)) out"
+                if let model = agent.primaryModel { line += " · \(Fmt.shortModel(model))" }
+                menu.addItem(indented(line, by: 3))
+            }
+            let hidden = session.agents.count - min(session.agents.count, Self.maxAgentsPerSession)
+            if hidden > 0 { menu.addItem(indented("+\(hidden) more", by: 5)) }
+        }
+        let hidden = live.count - min(live.count, Self.maxLiveSessions)
+        if hidden > 0 { menu.addItem(indented("+\(hidden) more session(s)", by: 2)) }
+    }
+
+    private static let maxLiveSessions = 4
+    private static let maxAgentsPerSession = 6
 
     private func pad(_ s: String, _ width: Int) -> String {
         String(repeating: " ", count: max(0, width - s.count)) + s

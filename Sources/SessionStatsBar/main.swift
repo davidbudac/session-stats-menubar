@@ -32,6 +32,19 @@ if args.contains("--print") {
         }
     }
     row(cells("TOTAL", snap.grand, snap.totalCost))
+
+    print("\nsessions")
+    for s in snap.sessions.sorted(by: { $0.cost > $1.cost }) {
+        print("  \(s.isLive ? "●" : " ") \(s.project.padding(toLength: 26, withPad: " ", startingAt: 0))"
+              + "\(Pricing.money(s.cost))  \(Fmt.compact(s.totals.output)) out"
+              + "  \(s.agents.count) agents")
+        for a in s.agents {
+            print("      \(a.isLive ? "●" : "·") "
+                  + "\(a.label.padding(toLength: 22, withPad: " ", startingAt: 0))"
+                  + "\(Pricing.money(a.cost))  \(Fmt.compact(a.totals.output)) out"
+                  + "  \(a.primaryModel.map(Fmt.shortModel) ?? "?")")
+        }
+    }
     exit(0)
 }
 
