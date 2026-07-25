@@ -33,27 +33,9 @@ final class Scanner {
     /// Bytes read per pass. Bounds peak memory on the first, large scan.
     private static let chunkSize = 1 << 18   // 256 KB
 
-    /// What a transcript file is, decided from its path.
-    private struct FileRef {
-        var isSubagent: Bool
-        /// `agent-<id>.jsonl` -> `<id>`, for pairing with the sibling meta file.
-        var agentID: String?
-        var metaPath: String?
-    }
-
-    /// Sidecar written when a subagent is spawned. All fields are optional —
-    /// early files carry only `agentType`.
-    private struct AgentMeta {
-        var label: String
-    }
-
     private struct FileState {
         var offset: UInt64 = 0
         var partial = Data()
-        /// Subagent rows carry the *parent* session id, so this groups a
-        /// session's main transcript and its agents under one key.
-        var sessionID: String?
-        var cwd: String?
         /// Usage is repeated on every content block of a message, so requests
         /// are deduped on requestId+message.id — without it totals run 2-4x high.
         var seen = Set<String>()
@@ -66,11 +48,9 @@ final class Scanner {
         var day: String
         var output: Int
         var byModel: [String: Totals]
-        var cwd: String?
     }
 
     private var files: [String: FileState] = [:]
-    private var metaCache: [String: AgentMeta] = [:]
     private var logOffset: UInt64 = 0
     private var logPartial = Data()
     private var logRecords: [String: LogRecord] = [:]   // session id -> best record
@@ -86,9 +66,9 @@ final class Scanner {
 
         let transcripts = discoverTranscripts(modifiedSince: keepFrom)
         files = files.filter { transcripts[$0.key] != nil }
-        for (path, ref) in transcripts {
+        for (path, isSubagent) in transcripts {
             var state = files[path] ?? FileState()
-            ingest(path: path, isSubagent: ref.isSubagent, into: &state)
+            ingest(path: path, isSubagent: isSubagent, into: &state)
             prune(&state, keeping: keepFrom)
             files[path] = state
         }
@@ -98,84 +78,40 @@ final class Scanner {
         // "Active" always means recently, not recently-relative-to-the-day
         // being queried — otherwise every past day reads as fully live.
         let liveCutoff = Date().addingTimeInterval(-Self.liveWindow)
-        var sessions: [String: SessionSnapshot] = [:]
 
-        for (path, ref) in transcripts {
-            guard let state = files[path] else { continue }
-            for ids in state.sessionsByDay.values { onDisk.formUnion(ids) }
-
-            guard let models = state.byDay[today], !models.isEmpty,
-                  let sid = state.sessionID else { continue }
-            for (model, totals) in models { snap.byModel[model, default: Totals()] += totals }
-            onDisk.insert(sid)
-
-            let live = (state.lastTimestamp ?? .distantPast) > liveCutoff
-            var session = sessions[sid]
-                ?? SessionSnapshot(id: sid, project: Self.projectName(state.cwd))
-            if session.project.isEmpty { session.project = Self.projectName(state.cwd) }
-            if ref.isSubagent {
-                session.agents.append(AgentSnapshot(
-                    id: ref.agentID ?? path,
-                    label: label(for: ref),
-                    byModel: models,
-                    lastActivity: state.lastTimestamp,
-                    isLive: live))
-            } else {
-                for (model, totals) in models { session.byModel[model, default: Totals()] += totals }
+        for state in files.values {
+            if let models = state.byDay[today] {
+                for (model, totals) in models { snap.byModel[model, default: Totals()] += totals }
             }
-            if let last = state.lastTimestamp,
-               last > (session.lastActivity ?? .distantPast) {
-                session.lastActivity = last
+            if let ids = state.sessionsByDay[today] {
+                snap.sessions.formUnion(ids)
+                onDisk.formUnion(ids)
+                if let last = state.lastTimestamp, last > liveCutoff {
+                    snap.liveSessions.formUnion(ids)
+                }
             }
-            // A session counts as running if anything under it — main thread or
-            // a subagent — wrote recently.
-            session.isLive = session.isLive || live
-            sessions[sid] = session
         }
-
-        snap.sessions = sessions.values.map {
-            var s = $0
-            s.agents.sort { $0.cost > $1.cost }
-            return s
+        // Sessions on disk for other days still count as "has a transcript".
+        for state in files.values {
+            for ids in state.sessionsByDay.values { onDisk.formUnion(ids) }
         }
 
         ingestLog(keeping: keepFrom)
         for (sid, rec) in logRecords where rec.day == today && !onDisk.contains(sid) {
             for (model, totals) in rec.byModel { snap.byModel[model, default: Totals()] += totals }
-            snap.sessions.append(SessionSnapshot(id: sid, project: Self.projectName(rec.cwd),
-                                                 byModel: rec.byModel))
+            snap.sessions.insert(sid)
         }
 
         snap.scannedAt = date
         return snap
     }
 
-    private static func projectName(_ cwd: String?) -> String {
-        guard let cwd, !cwd.isEmpty else { return "unknown" }
-        return (cwd as NSString).lastPathComponent
-    }
-
-    /// Prefers the name the parent gave the agent, then its type. Cached — the
-    /// sidecar is written once at spawn and never rewritten.
-    private func label(for ref: FileRef) -> String {
-        guard let metaPath = ref.metaPath else { return "subagent" }
-        if let hit = metaCache[metaPath] { return hit.label }
-        guard let data = FileManager.default.contents(atPath: metaPath),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return "subagent" }
-        let label = (obj["name"] as? String)
-            ?? (obj["agentType"] as? String)
-            ?? "subagent"
-        metaCache[metaPath] = AgentMeta(label: label)
-        return label
-    }
-
     // MARK: - Discovery
 
-    /// A file untouched since `cutoff` cannot contain rows newer than `cutoff`,
-    /// so mtime is a sound prefilter.
-    private func discoverTranscripts(modifiedSince cutoff: Date) -> [String: FileRef] {
-        var out: [String: FileRef] = [:]
+    /// Returns path -> isSubagentTranscript. A file untouched since `cutoff`
+    /// cannot contain rows newer than `cutoff`, so mtime is a sound prefilter.
+    private func discoverTranscripts(modifiedSince cutoff: Date) -> [String: Bool] {
+        var out: [String: Bool] = [:]
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
         guard let walker = FileManager.default.enumerator(
             at: paths.projects, includingPropertiesForKeys: keys,
@@ -189,15 +125,7 @@ final class Scanner {
             let name = url.lastPathComponent
             let isSubagent = url.deletingLastPathComponent().lastPathComponent == "subagents"
                 || name.hasPrefix("agent-")
-            guard isSubagent else {
-                out[url.path] = FileRef(isSubagent: false, agentID: nil, metaPath: nil)
-                continue
-            }
-            let stem = String(name.dropLast(".jsonl".count))
-            out[url.path] = FileRef(
-                isSubagent: true,
-                agentID: stem.hasPrefix("agent-") ? String(stem.dropFirst("agent-".count)) : stem,
-                metaPath: url.deletingPathExtension().appendingPathExtension("meta.json").path)
+            out[url.path] = isSubagent
         }
         return out
     }
@@ -325,11 +253,7 @@ final class Scanner {
         state.byDay[day, default: [:]][model, default: Totals()] += totals
         if let sid = obj["sessionId"] as? String {
             state.sessionsByDay[day, default: []].insert(sid)
-            // Subagent rows carry the parent's session id, which is exactly what
-            // groups an agent under the session that spawned it.
-            if state.sessionID == nil { state.sessionID = sid }
         }
-        if state.cwd == nil { state.cwd = obj["cwd"] as? String }
     }
 
     private func prune(_ state: inout FileState, keeping cutoff: Date) {
@@ -390,7 +314,6 @@ final class Scanner {
                 cacheRead: raw["cache_read_input_tokens"] as? Int ?? 0,
                 output: raw["output_tokens"] as? Int ?? 0)
         }
-        logRecords[sid] = LogRecord(day: Fmt.localDay(ts), output: output, byModel: byModel,
-                                    cwd: rec["cwd"] as? String)
+        logRecords[sid] = LogRecord(day: Fmt.localDay(ts), output: output, byModel: byModel)
     }
 }

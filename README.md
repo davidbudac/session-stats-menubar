@@ -58,18 +58,7 @@ fable-5        $5.78 ·   7.7k out ·   2.5M in
 ──────────────────────────────────────────────────────────
 Total          $36.9 ·   162k out ·  34.4M in
 Cache hit rate  95.9%  ·  237 requests
-4 sessions · 5 subagents
-──────────────────────────────────────────────────────────
-Running now
-awr_timeline_comparison  $32.8 ·    92k out · O48
-  5 subagents · $16.3 (50% of session)
-   ● fleet-b-impl         $10.5 ·    18k out · O48
-   · fleet-docs           $2.10 ·   3.9k out · O48
-   · mock-b-console       $1.77 ·   3.6k out · O48
-   · mock-c-timeline      $1.14 ·     2k out · O48
-   · mock-a-cards         $0.74 ·   451 out · O48
-session_stats_macosapp   $25.7 ·    99k out · O5
-  no subagents
+3 sessions · 1 active now
 ──────────────────────────────────────────────────────────
 Open Dashboard        ⌘D
 Refresh Now           ⌘R
@@ -80,25 +69,6 @@ Quit Session Stats    ⌘Q
 
 The dimmed second line under each model is where that money actually went,
 biggest component first.
-
-### Running now
-
-A session is listed as running if anything under it — its main thread or any
-subagent — wrote to a transcript in the last 5 minutes. Each one shows the
-project directory, its cost including subagents, and the model that did most of
-the work.
-
-Subagents are nested under the session that spawned them, labelled with the name
-the parent gave them (`fleet-b-impl`) or their agent type (`Explore`, `Plan`)
-when unnamed, and priced against the model that actually served them — which is
-often not the parent's model. The `● / ·` marker distinguishes agents still
-running from ones that have finished.
-
-The `(50% of session)` figure is the point of the section: fan-out is easy to
-under-estimate, and on a heavy day subagents can outspend the main thread.
-
-Bounded at 4 sessions and 6 subagents each, with a `+N more` line, so a wide
-fan-out can't grow the menu past the screen.
 
 ## Where the money goes
 
@@ -181,9 +151,7 @@ one:
 - **Subagent turns are counted once.** They appear both in the parent transcript
   flagged `isSidechain`, and again in their own `subagents/agent-*.jsonl`. The
   sidechain copies are skipped and the dedicated files are read instead, so
-  nested subagents count exactly once. Those rows carry the *parent's*
-  `sessionId`, which is what lets an agent be grouped under the session that
-  spawned it; its name and type come from the sibling `agent-*.meta.json`.
+  nested subagents count exactly once.
 - **`<synthetic>` messages are skipped** — they're not billed API calls.
 - **Total input** = uncached input + cache write + cache read, as in the skill.
   It's large by design: every API request re-sends the whole conversation, and
