@@ -29,15 +29,17 @@ echo "==> Built $DMG ($(du -h "$DMG" | cut -f1))"
 
 if [[ $# -ge 1 ]]; then
     TAG="$1"
-    echo "==> Publishing release $TAG"
-    gh release create "$TAG" "$DMG" \
-        --title "$APP_NAME $TAG" \
-        --notes-file <(cat <<'NOTES'
+    NOTES="build/release-notes.md"
+    cat > "$NOTES" <<'NOTES_END'
 Today's Claude Code token usage, per model, in the menu bar.
 
 **Install:** open the DMG, drag **Session Stats** to Applications. The app is
 ad-hoc signed and not notarized, so the first launch needs **right-click → Open**
 (double-clicking will refuse). See the README for details.
-NOTES
-)
+NOTES_END
+
+    echo "==> Publishing release $TAG"
+    gh release create "$TAG" "$DMG" \
+        --title "$APP_NAME $TAG" \
+        --notes-file "$NOTES"
 fi
