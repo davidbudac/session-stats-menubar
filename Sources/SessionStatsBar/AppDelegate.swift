@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.autosaveName = "SessionStatsMain"
         statusItem.button?.title = "…"
         menu.delegate = self
+        menu.autoenablesItems = false
         statusItem.menu = menu
 
         rebuildMenu()
@@ -102,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if Settings.showModelLabels {
                 title.append(NSAttributedString(
                     string: Fmt.shortModel(entry.model) + " ",
-                    attributes: [.font: tag, .foregroundColor: NSColor.secondaryLabelColor]))
+                    attributes: [.font: tag, .foregroundColor: NSColor.labelColor]))
             }
             let parts = metric.render(entry.totals, cost: entry.cost)
             title.append(NSAttributedString(string: parts.primary, attributes: [
@@ -310,41 +311,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         String(repeating: " ", count: max(0, width - s.count)) + s
     }
 
-    private func header(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.secondaryLabelColor])
+    /// Read-only rows are built enabled, not disabled. AppKit renders a
+    /// disabled item washed out no matter what `foregroundColor` you set, which
+    /// made the whole readout barely legible against the action items below it.
+    /// The menu turns off auto-enabling instead, so an item with no action stays
+    /// full-contrast and simply does nothing when clicked.
+    private func infoItem(_ title: String, font: NSFont, color: NSColor,
+                          indent: Int = 0) -> NSMenuItem {
+        let text = String(repeating: " ", count: indent) + title
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        item.isEnabled = true
+        item.attributedTitle = NSAttributedString(
+            string: text, attributes: [.font: font, .foregroundColor: color])
         return item
+    }
+
+    private func header(_ title: String) -> NSMenuItem {
+        infoItem(title, font: .systemFont(ofSize: 11, weight: .semibold),
+                 color: .secondaryLabelColor)
     }
 
     private func disabled(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: NSColor.secondaryLabelColor])
-        return item
+        infoItem(title, font: .systemFont(ofSize: 12), color: .labelColor)
     }
 
     private func indented(_ title: String, by columns: Int) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = NSAttributedString(
-            string: String(repeating: " ", count: columns) + title,
-            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-                         .foregroundColor: NSColor.tertiaryLabelColor])
-        return item
+        infoItem(title, font: .monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+                 color: .secondaryLabelColor, indent: columns)
     }
 
     private func monospaced(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.attributedTitle = NSAttributedString(string: title, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: NSColor.labelColor])
-        return item
+        infoItem(title, font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+                 color: .labelColor)
     }
 
     private func action(_ title: String, _ selector: Selector, key: String) -> NSMenuItem {
