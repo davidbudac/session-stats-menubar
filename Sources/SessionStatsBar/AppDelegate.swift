@@ -80,8 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             title.append(NSAttributedString(string: Fmt.shortModel(entry.model) + " ", attributes: [
                 .font: tag, .foregroundColor: NSColor.secondaryLabelColor]))
-            title.append(NSAttributedString(string: Pricing.money(entry.cost), attributes: [
+            title.append(NSAttributedString(string: Fmt.compact(entry.totals.output), attributes: [
                 .font: value, .foregroundColor: NSColor.labelColor]))
+            title.append(NSAttributedString(string: "/" + Fmt.compact(entry.totals.totalInput),
+                                            attributes: [
+                .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
         }
         if hidden > 0 {
             title.append(NSAttributedString(string: " +\(hidden)", attributes: [

@@ -1,18 +1,19 @@
 # Session Stats — macOS menu bar
 
-Today's Claude Code spend, per model, in the menu bar.
+Today's Claude Code token usage, per model, in the menu bar.
 
 ```
-O5 $31.2 · F5 $5.78
+O5 215k/74.2M · F5 15k/8.6M
 ```
 
-Estimated cost for the current calendar day, most expensive model first. Models
-with no traffic today are hidden. The number moves while you work — it does not
-wait for a session to end.
+Each entry reads `<model> <output>/<total input>` for the current calendar day.
+Models with no traffic today are hidden. The numbers move while you work — they
+do not wait for a session to end.
 
-Why money rather than a token count: **no single token count tracks price.** On a
-representative day here, output tokens were 13% of spend and the prompt cache was
-87% — see [Where the money goes](#where-the-money-goes).
+Models are ordered by **cost**, not by token count, and the dropdown prices each
+one. Worth knowing why the two differ: output tokens are only ~13% of what you
+actually pay, and the prompt cache is ~87% — see
+[Where the money goes](#where-the-money-goes).
 
 Companion to the [session-stats](https://github.com/davidbudac/session-stats)
 Claude Code skill: the same numbers that `/session-stats` reports, always on
@@ -115,9 +116,10 @@ a real day, measured:
 
 Cache reads are cheap per token and enormous in volume — every request re-sends
 the whole conversation. Cache writes cost double the input rate on a 1-hour TTL.
-Uncached input rounds to zero. That's why the menu bar shows dollars: no single
-token count is a usable proxy, and "output tokens" would have hidden 87% of the
-bill.
+Uncached input rounds to zero. So treat the menu bar's token counts as a measure
+of *volume*, not of spend — no single token count is a usable proxy for price.
+The dropdown is where the money is, which is also why models are ordered by cost
+rather than by tokens.
 
 ### Rates
 
