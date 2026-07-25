@@ -3,12 +3,12 @@
 Today's Claude Code token usage, per model, in the menu bar.
 
 ```
-O5 215k/74.2M · F5 15k/8.6M
+O5 268k · F5 31k
 ```
 
-Each entry reads `<model> <output>/<total input>` for the current calendar day.
-Models with no traffic today are hidden. The numbers move while you work — they
-do not wait for a session to end.
+Output tokens for the current calendar day, by default. Models with no traffic
+today are hidden. The numbers move while you work — they do not wait for a
+session to end. What's shown is configurable — see [Settings](#settings).
 
 Models are ordered by **cost**, not by token count, and the dropdown prices each
 one. Worth knowing why the two differ: output tokens are only ~13% of what you
@@ -253,13 +253,50 @@ them against the skill:
 
 ## Settings
 
-No preferences window; two knobs live in `defaults`:
+Everything about the menu bar readout is configurable from the **Settings**
+submenu in the dropdown:
+
+| Setting | Options | Default |
+|---|---|---|
+| **Menu bar shows** | Output tokens · Output / total input · Total input · Estimated cost · Requests | Output tokens |
+| **Models in menu bar** | 1 · 2 · 3 · All (the rest collapse into `+N`) | 3 |
+| **Show model labels** | on/off — drop the `O5` / `F5` prefixes for a bare number | on |
+| **Collapse to ⋯** | shrink the item to a single glyph | off |
+
+Models are always ordered by **cost**, whichever metric you display — that ranks
+them by what they actually cost rather than by volume. The dropdown always shows
+every model regardless of the menu bar cap.
+
+### Collapsing
+
+**Collapse to ⋯** shrinks the item in place, from ~112pt to ~35pt. Clicking it
+still opens the menu, so the setting is always reachable again.
+
+It deliberately does *not* work the Bartender way — a second chevron item that
+hides the first. That was built and abandoned: macOS places a new status item
+where it likes, and on this notched display it landed at x≈778, **behind the
+notch**. The item existed, had a size, reported itself to the accessibility tree
+and responded to clicks — it was simply invisible, with no way for a user to
+find it. Collapsing in place can't land somewhere unreachable.
+
+### Via `defaults`
+
+The same preferences, for scripting. Keys: `metric` (`output`,
+`outputAndInput`, `totalInput`, `cost`, `requests`), `maxModels` (0 = all),
+`showModelLabels`, `collapsed`.
 
 ```bash
-# Models shown in the menu bar before collapsing to "+N" (default 3).
-# A five-model day would otherwise eat a lot of menu bar.
+defaults write com.davidbudac.SessionStatsBar metric -string cost
 defaults write com.davidbudac.SessionStatsBar maxModels -int 2
+```
 
+Run `"/Applications/Session Stats.app/Contents/MacOS/SessionStatsBar" --settings`
+to print what the app actually reads — the reliable way to tell a preference
+that didn't apply from one that was never written.
+
+Two further knobs live only in `defaults`:
+
+```bash
 # Explicit path to visualize.py, if it isn't in a standard skill location
 defaults write com.davidbudac.SessionStatsBar visualizePath /path/to/visualize.py
 

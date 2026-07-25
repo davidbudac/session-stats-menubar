@@ -3,6 +3,17 @@ import AppKit
 // Headless mode, for checking the numbers against `session_stats.py --rollup`:
 //     SessionStatsBar --print [YYYY-MM-DD]
 let args = CommandLine.arguments
+// `--settings` dumps what the app actually reads, which is the only reliable way
+// to tell a preference that didn't apply from one that was never written.
+if args.contains("--settings") {
+    print("bundle id      \(Bundle.main.bundleIdentifier ?? "(none)")")
+    print("metric         \(Settings.metric.rawValue)")
+    print("maxModels      \(Settings.maxModels)")
+    print("showLabels     \(Settings.showModelLabels)")
+    print("collapsed      \(Settings.collapsed)")
+    exit(0)
+}
+
 if args.contains("--print") {
     let day = args.last.flatMap { Fmt.dayFormatter.date(from: $0) } ?? Date()
     let snap = Scanner().snapshot(for: day)

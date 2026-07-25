@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = "SessionStatsMain"
         statusItem.button?.title = "…"
         menu.delegate = self
         statusItem.menu = menu
@@ -53,6 +54,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let ranked = snapshot.ranked
+
+        // Collapsed state shrinks this item to a single glyph rather than adding
+        // a second status item to toggle visibility. A second item gets placed
+        // wherever macOS decides — on a notched display that can be *behind the
+        // notch*, leaving a control that exists and responds to clicks but is
+        // invisible. Collapsing in place can't land somewhere unreachable, and
+        // clicking still opens the menu, so the setting is always recoverable.
+        if Settings.collapsed {
+            button.attributedTitle = NSAttributedString(
+                string: "⋯",
+                attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                             .foregroundColor: NSColor.secondaryLabelColor])
+            button.toolTip = ranked.isEmpty
+                ? "Session Stats — nothing recorded today"
+                : "Today: ~\(Pricing.money(snapshot.totalCost)) · "
+                    + "\(Fmt.full(snapshot.grand.output)) output — click for detail"
+            return
+        }
+
         guard !ranked.isEmpty else {
             button.attributedTitle = NSAttributedString(
                 string: "—",
@@ -68,9 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // A busy day can touch five models; the menu bar is not that wide.
         // The dropdown always shows every one of them.
-        let cap = max(1, UserDefaults.standard.object(forKey: "maxModels") as? Int ?? 3)
-        let shown = ranked.prefix(cap)
+        let cap = Settings.maxModels
+        let shown = cap > 0 ? Array(ranked.prefix(cap)) : ranked
         let hidden = ranked.count - shown.count
+        let metric = Settings.metric
 
         let title = NSMutableAttributedString()
         for (index, entry) in shown.enumerated() {
@@ -78,13 +99,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 title.append(NSAttributedString(string: " · ", attributes: [
                     .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
             }
-            title.append(NSAttributedString(string: Fmt.shortModel(entry.model) + " ", attributes: [
-                .font: tag, .foregroundColor: NSColor.secondaryLabelColor]))
-            title.append(NSAttributedString(string: Fmt.compact(entry.totals.output), attributes: [
+            if Settings.showModelLabels {
+                title.append(NSAttributedString(
+                    string: Fmt.shortModel(entry.model) + " ",
+                    attributes: [.font: tag, .foregroundColor: NSColor.secondaryLabelColor]))
+            }
+            let parts = metric.render(entry.totals, cost: entry.cost)
+            title.append(NSAttributedString(string: parts.primary, attributes: [
                 .font: value, .foregroundColor: NSColor.labelColor]))
-            title.append(NSAttributedString(string: "/" + Fmt.compact(entry.totals.totalInput),
-                                            attributes: [
-                .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
+            if let secondary = parts.secondary {
+                title.append(NSAttributedString(string: secondary, attributes: [
+                    .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
+            }
         }
         if hidden > 0 {
             title.append(NSAttributedString(string: " +\(hidden)", attributes: [
@@ -156,6 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(action("Refresh Now", #selector(refreshNow), key: "r"))
         menu.addItem(.separator())
 
+        let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
+        settings.submenu = buildSettingsMenu()
+        menu.addItem(settings)
+
         let login = action("Open at Login", #selector(toggleLaunchAtLogin), key: "")
         login.state = launchAtLoginEnabled ? .on : .off
         menu.addItem(login)
@@ -205,6 +235,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private static let maxLiveSessions = 4
     private static let maxAgentsPerSession = 6
+
+    // MARK: - Settings submenu
+
+    private func buildSettingsMenu() -> NSMenu {
+        let sub = NSMenu()
+
+        sub.addItem(header("Menu bar shows"))
+        for metric in MenuBarMetric.allCases {
+            let item = NSMenuItem(title: metric.title, action: #selector(setMetric(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = metric.rawValue
+            item.state = Settings.metric == metric ? .on : .off
+            sub.addItem(item)
+        }
+
+        sub.addItem(.separator())
+        sub.addItem(header("Models in menu bar"))
+        for count in [1, 2, 3, 0] {
+            let item = NSMenuItem(title: count == 0 ? "All" : "\(count)",
+                                  action: #selector(setMaxModels(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = count
+            item.state = Settings.maxModels == count ? .on : .off
+            sub.addItem(item)
+        }
+
+        sub.addItem(.separator())
+        let labels = NSMenuItem(title: "Show model labels",
+                                action: #selector(toggleModelLabels), keyEquivalent: "")
+        labels.target = self
+        labels.state = Settings.showModelLabels ? .on : .off
+        sub.addItem(labels)
+
+        let collapse = NSMenuItem(title: "Collapse to ⋯",
+                                  action: #selector(toggleCollapsed), keyEquivalent: "")
+        collapse.target = self
+        collapse.state = Settings.collapsed ? .on : .off
+        collapse.toolTip = "Shrink the menu bar item to a single glyph. "
+            + "Clicking it still opens this menu."
+        sub.addItem(collapse)
+        return sub
+    }
+
+    @objc private func setMetric(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let metric = MenuBarMetric(rawValue: raw) else { return }
+        Settings.metric = metric
+        applySettings()
+    }
+
+    @objc private func setMaxModels(_ sender: NSMenuItem) {
+        Settings.maxModels = sender.tag
+        applySettings()
+    }
+
+    @objc private func toggleModelLabels() {
+        Settings.showModelLabels.toggle()
+        applySettings()
+    }
+
+    @objc private func toggleCollapsed() {
+        Settings.collapsed.toggle()
+        applySettings()
+    }
+
+    private func applySettings() {
+        updateTitle()
+        rebuildMenu()
+    }
 
     private func pad(_ s: String, _ width: Int) -> String {
         String(repeating: " ", count: max(0, width - s.count)) + s
