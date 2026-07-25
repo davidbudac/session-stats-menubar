@@ -246,6 +246,9 @@ final class Scanner {
         totals.cacheWrite = usage["cache_creation_input_tokens"] as? Int ?? 0
         totals.cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
         totals.output = usage["output_tokens"] as? Int ?? 0
+        // The TTL split decides whether a cache write bills at 2x or 1.25x.
+        let creation = usage["cache_creation"] as? [String: Any] ?? [:]
+        totals.cacheWrite1h = creation["ephemeral_1h_input_tokens"] as? Int ?? 0
 
         state.byDay[day, default: [:]][model, default: Totals()] += totals
         if let sid = obj["sessionId"] as? String {

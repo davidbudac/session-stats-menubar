@@ -8,25 +8,30 @@ if args.contains("--print") {
     let snap = Scanner().snapshot(for: day)
     print("Day        \(snap.day)")
     print("Sessions   \(snap.sessions.count) (\(snap.liveSessions.count) active)")
-    func row(_ model: String, _ reqs: String, _ input: String, _ total: String, _ out: String) {
+    func row(_ cells: [String]) {
         func rpad(_ s: String, _ w: Int) -> String {
             s + String(repeating: " ", count: max(0, w - s.count))
         }
         func lpad(_ s: String, _ w: Int) -> String {
             String(repeating: " ", count: max(0, w - s.count)) + s
         }
-        print(rpad(model, 18) + lpad(reqs, 10) + lpad(input, 10)
-              + lpad(total, 15) + lpad(out, 11))
+        print(rpad(cells[0], 18) + cells.dropFirst().map { lpad($0, 14) }.joined())
     }
-    row("model", "reqs", "input", "total in", "output")
+    row(["model", "reqs", "input", "cache wr", "cache rd", "output", "cost"])
+    func cells(_ name: String, _ t: Totals, _ cost: Double) -> [String] {
+        [name, Fmt.full(t.requests), Fmt.full(t.inputUncached),
+         Fmt.full(t.cacheWrite), Fmt.full(t.cacheRead), Fmt.full(t.output),
+         Pricing.money(cost)]
+    }
     for e in snap.ranked {
-        row(Fmt.longModel(e.model), Fmt.full(e.totals.requests),
-            Fmt.full(e.totals.inputUncached), Fmt.full(e.totals.totalInput),
-            Fmt.full(e.totals.output))
+        row(cells(Fmt.longModel(e.model), e.totals, e.cost))
+        for part in Pricing.breakdown(e.totals, model: e.model, on: snap.scannedAt)
+        where part.cost >= 0.005 {
+            print("    \(part.label.padding(toLength: 14, withPad: " ", startingAt: 0))"
+                  + Pricing.money(part.cost))
+        }
     }
-    let g = snap.grand
-    row("TOTAL", Fmt.full(g.requests), Fmt.full(g.inputUncached),
-        Fmt.full(g.totalInput), Fmt.full(g.output))
+    row(cells("TOTAL", snap.grand, snap.totalCost))
     exit(0)
 }
 

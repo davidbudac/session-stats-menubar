@@ -1,14 +1,18 @@
 # Session Stats — macOS menu bar
 
-Today's Claude Code token usage, per model, in the menu bar.
+Today's Claude Code spend, per model, in the menu bar.
 
 ```
-O5 129k/23M · F5 7.7k/2.5M
+O5 $31.2 · F5 $5.78
 ```
 
-Each entry reads `<model> <output>/<total input>` for the current calendar day,
-biggest output first. Models with no traffic today are hidden. The number moves
-while you work — it does not wait for a session to end.
+Estimated cost for the current calendar day, most expensive model first. Models
+with no traffic today are hidden. The number moves while you work — it does not
+wait for a session to end.
+
+Why money rather than a token count: **no single token count tracks price.** On a
+representative day here, output tokens were 13% of spend and the prompt cache was
+87% — see [Where the money goes](#where-the-money-goes).
 
 Companion to the [session-stats](https://github.com/davidbudac/session-stats)
 Claude Code skill: the same numbers that `/session-stats` reports, always on
@@ -47,19 +51,72 @@ dependencies — no Python, no packages, no network access.
 
 ```
 Today · 2026-07-25
-opus-5        129k out ·    23M in · 168 req
-fable-5       7.7k out ·   2.5M in ·  30 req
-────────────────────────────────────────────
-Total         137k out ·  25.5M in · 198 req
-Cache hit rate  95.8%
+opus-5         $31.2 ·   154k out ·  31.8M in
+               cache read $15.3 · cache write $11.7 · output $3.85
+fable-5        $5.78 ·   7.7k out ·   2.5M in
+               cache write $3.04 · cache read $2.35 · output $0.39
+──────────────────────────────────────────────────────────
+Total          $36.9 ·   162k out ·  34.4M in
+Cache hit rate  95.9%  ·  237 requests
 3 sessions · 1 active now
-────────────────────────────────────────────
+──────────────────────────────────────────────────────────
 Open Dashboard        ⌘D
 Refresh Now           ⌘R
-────────────────────────────────────────────
+──────────────────────────────────────────────────────────
 Open at Login
 Quit Session Stats    ⌘Q
 ```
+
+The dimmed second line under each model is where that money actually went,
+biggest component first.
+
+## Where the money goes
+
+The intuition that output tokens drive cost is wrong for Claude Code. Output is
+billed at 5× the input rate, but the prompt cache moves far more tokens. Here is
+a real day, measured:
+
+| Component | Rate (× input) | Share of spend |
+|---|---|---|
+| Cache read | 0.1× | **46%** |
+| Cache write (1h TTL) | 2× | **41%** |
+| Output | 5× | 13% |
+| Uncached input | 1× | ~0% |
+
+Cache reads are cheap per token and enormous in volume — every request re-sends
+the whole conversation. Cache writes cost double the input rate on a 1-hour TTL.
+Uncached input rounds to zero. That's why the menu bar shows dollars: no single
+token count is a usable proxy, and "output tokens" would have hidden 87% of the
+bill.
+
+### Rates
+
+Per million tokens, accurate as of 2026-07-25:
+
+| Model | Input | Output |
+|---|---|---|
+| Opus 5, Opus 4.8 / 4.7 / 4.6 / 4.5 | $5 | $25 |
+| Fable 5, Mythos 5 | $10 | $50 |
+| Sonnet 5, Sonnet 4.6 / 4.5 | $3 | $15 |
+| Haiku 4.5 | $1 | $5 |
+
+Cache read is 0.1× the model's input rate; cache write is 1.25× (5-minute TTL) or
+2× (1-hour). Sonnet 5's introductory $2/$10 is applied automatically until
+2026-08-31. A model with no entry is priced at Opus rates and flagged in the
+dropdown rather than silently counted as free.
+
+**These prices will go stale.** The
+[session-stats](https://github.com/davidbudac/session-stats) skill deliberately
+reports tokens and no prices for exactly that reason. Override any rate without
+rebuilding:
+
+```bash
+# input and output $/MTok for a model prefix
+defaults write com.davidbudac.SessionStatsBar rate_opus-5 -array 5 25
+```
+
+Figures are an estimate. They don't know about Batch API discounts, priority
+tier, fast mode, or anything negotiated in your contract.
 
 ## How it works
 
@@ -100,6 +157,9 @@ one:
   It's large by design: every API request re-sends the whole conversation, and
   most of it is served from cache.
 - **Cache hit rate** = cache read ÷ total input.
+- **Cache-write TTL is tracked separately** (`ephemeral_1h_input_tokens`), because
+  a 1-hour write bills at 2× input and a 5-minute one at 1.25×. A transcript with
+  no TTL split is priced at the 5-minute tier, matching the API default.
 
 Verified rather than assumed: for a completed day (2026-07-24) the app and
 `session_stats.py --rollup --json` agree exactly — 886 requests, 4,045 uncached
@@ -168,6 +228,9 @@ defaults write com.davidbudac.SessionStatsBar maxModels -int 2
 
 # Explicit path to visualize.py, if it isn't in a standard skill location
 defaults write com.davidbudac.SessionStatsBar visualizePath /path/to/visualize.py
+
+# Override a model's $/MTok rates (input, output) — see Rates above
+defaults write com.davidbudac.SessionStatsBar rate_opus-5 -array 5 25
 ```
 
 The skill's environment overrides are respected too: `CLAUDE_CONFIG_DIR` and

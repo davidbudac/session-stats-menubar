@@ -80,10 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             title.append(NSAttributedString(string: Fmt.shortModel(entry.model) + " ", attributes: [
                 .font: tag, .foregroundColor: NSColor.secondaryLabelColor]))
-            title.append(NSAttributedString(string: Fmt.compact(entry.totals.output), attributes: [
+            title.append(NSAttributedString(string: Pricing.money(entry.cost), attributes: [
                 .font: value, .foregroundColor: NSColor.labelColor]))
-            title.append(NSAttributedString(string: "/" + Fmt.compact(entry.totals.totalInput), attributes: [
-                .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
         }
         if hidden > 0 {
             title.append(NSAttributedString(string: " +\(hidden)", attributes: [
@@ -92,8 +90,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.attributedTitle = title
 
         let grand = snapshot.grand
-        button.toolTip = "Today: \(Fmt.full(grand.output)) output, "
-            + "\(Fmt.full(grand.totalInput)) input, across \(snapshot.sessions.count) session(s)"
+        button.toolTip = "Today: ~\(Pricing.money(snapshot.totalCost)) — "
+            + "\(Fmt.full(grand.output)) output, \(Fmt.full(grand.totalInput)) input, "
+            + "across \(snapshot.sessions.count) session(s)"
     }
 
     // MARK: - Dropdown
@@ -107,27 +106,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let ranked = snapshot.ranked
         if ranked.isEmpty {
-            menu.addItem(disabled("No tokens recorded yet today"))
+            menu.addItem(disabled("Nothing recorded yet today"))
         } else {
-            let width = ranked.map { Fmt.longModel($0.model).count }.max() ?? 0
+            let width = max(ranked.map { Fmt.longModel($0.model).count }.max() ?? 0, 10)
             for entry in ranked {
-                let name = Fmt.longModel(entry.model).padding(toLength: max(width, 10),
-                                                              withPad: " ", startingAt: 0)
-                let line = "\(name)  \(pad(Fmt.compact(entry.totals.output), 6)) out"
-                    + " · \(pad(Fmt.compact(entry.totals.totalInput), 6)) in"
-                    + " · \(entry.totals.requests) req"
-                menu.addItem(monospaced(line))
+                let name = Fmt.longModel(entry.model)
+                    .padding(toLength: width, withPad: " ", startingAt: 0)
+                menu.addItem(monospaced("\(name)  \(pad(Pricing.money(entry.cost), 8))"
+                    + " · \(pad(Fmt.compact(entry.totals.output), 6)) out"
+                    + " · \(pad(Fmt.compact(entry.totals.totalInput), 6)) in"))
+                // Where the money actually went — output is rarely the top line.
+                let parts = Pricing.breakdown(entry.totals, model: entry.model,
+                                              on: snapshot.scannedAt)
+                    .filter { $0.cost >= 0.005 }
+                    .map { "\($0.label) \(Pricing.money($0.cost))" }
+                if !parts.isEmpty {
+                    menu.addItem(indented(parts.joined(separator: " · "), by: width + 2))
+                }
             }
             menu.addItem(.separator())
 
             let grand = snapshot.grand
-            menu.addItem(monospaced("Total\(String(repeating: " ", count: max(width, 10) - 5))"
-                + "  \(pad(Fmt.compact(grand.output), 6)) out"
-                + " · \(pad(Fmt.compact(grand.totalInput), 6)) in"
-                + " · \(grand.requests) req"))
+            menu.addItem(monospaced("Total".padding(toLength: width, withPad: " ", startingAt: 0)
+                + "  \(pad(Pricing.money(snapshot.totalCost), 8))"
+                + " · \(pad(Fmt.compact(grand.output), 6)) out"
+                + " · \(pad(Fmt.compact(grand.totalInput), 6)) in"))
             let hitRate = grand.totalInput > 0
                 ? Double(grand.cacheRead) / Double(grand.totalInput) * 100 : 0
-            menu.addItem(disabled(String(format: "Cache hit rate  %.1f%%", hitRate)))
+            menu.addItem(disabled(String(format: "Cache hit rate  %.1f%%  ·  %d requests",
+                                         hitRate, grand.requests)))
+            if ranked.contains(where: { !Pricing.rate(for: $0.model).known }) {
+                menu.addItem(disabled("Some models have no price on file — Opus rates assumed"))
+            }
 
             var sessionLine = "\(snapshot.sessions.count) session"
                 + (snapshot.sessions.count == 1 ? "" : "s")
@@ -167,6 +177,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.attributedTitle = NSAttributedString(string: title, attributes: [
             .font: NSFont.systemFont(ofSize: 12),
             .foregroundColor: NSColor.secondaryLabelColor])
+        return item
+    }
+
+    private func indented(_ title: String, by columns: Int) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(
+            string: String(repeating: " ", count: columns) + title,
+            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+                         .foregroundColor: NSColor.tertiaryLabelColor])
         return item
     }
 
