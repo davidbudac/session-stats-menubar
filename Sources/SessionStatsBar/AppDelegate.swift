@@ -1,0 +1,234 @@
+import AppKit
+import ServiceManagement
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private var statusItem: NSStatusItem!
+    private let menu = NSMenu()
+    private var timer: Timer?
+
+    /// The scanner does file I/O and is not thread-safe; it lives only here.
+    private let scanQueue = DispatchQueue(label: "sessionstats.scan", qos: .utility)
+    private let scanner = Scanner()
+    private var scanning = false
+
+    private var snapshot = DaySnapshot(day: Fmt.localDay(Date()))
+
+    private static let refreshInterval: TimeInterval = 30
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.title = "…"
+        menu.delegate = self
+        statusItem.menu = menu
+
+        rebuildMenu()
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+        timer?.tolerance = 5
+    }
+
+    // MARK: - Refresh
+
+    private func refresh() {
+        guard !scanning else { return }   // a slow first pass must not pile up
+        scanning = true
+        scanQueue.async { [weak self] in
+            guard let self else { return }
+            let snap = self.scanner.snapshot()
+            DispatchQueue.main.async {
+                self.scanning = false
+                self.snapshot = snap
+                self.updateTitle()
+                self.rebuildMenu()
+            }
+        }
+    }
+
+    // MARK: - Menu bar title
+
+    private func updateTitle() {
+        guard let button = statusItem.button else { return }
+        let ranked = snapshot.ranked
+        guard !ranked.isEmpty else {
+            button.attributedTitle = NSAttributedString(
+                string: "—",
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+                             .foregroundColor: NSColor.secondaryLabelColor])
+            button.toolTip = "No Claude Code tokens recorded today"
+            return
+        }
+
+        let tag = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold)
+        let value = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        let dim = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+
+        // A busy day can touch five models; the menu bar is not that wide.
+        // The dropdown always shows every one of them.
+        let cap = max(1, UserDefaults.standard.object(forKey: "maxModels") as? Int ?? 3)
+        let shown = ranked.prefix(cap)
+        let hidden = ranked.count - shown.count
+
+        let title = NSMutableAttributedString()
+        for (index, entry) in shown.enumerated() {
+            if index > 0 {
+                title.append(NSAttributedString(string: " · ", attributes: [
+                    .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
+            }
+            title.append(NSAttributedString(string: Fmt.shortModel(entry.model) + " ", attributes: [
+                .font: tag, .foregroundColor: NSColor.secondaryLabelColor]))
+            title.append(NSAttributedString(string: Fmt.compact(entry.totals.output), attributes: [
+                .font: value, .foregroundColor: NSColor.labelColor]))
+            title.append(NSAttributedString(string: "/" + Fmt.compact(entry.totals.totalInput), attributes: [
+                .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        if hidden > 0 {
+            title.append(NSAttributedString(string: " +\(hidden)", attributes: [
+                .font: dim, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        button.attributedTitle = title
+
+        let grand = snapshot.grand
+        button.toolTip = "Today: \(Fmt.full(grand.output)) output, "
+            + "\(Fmt.full(grand.totalInput)) input, across \(snapshot.sessions.count) session(s)"
+    }
+
+    // MARK: - Dropdown
+
+    func menuWillOpen(_ menu: NSMenu) { refresh() }
+
+    private func rebuildMenu() {
+        menu.removeAllItems()
+
+        menu.addItem(header("Today · \(snapshot.day)"))
+
+        let ranked = snapshot.ranked
+        if ranked.isEmpty {
+            menu.addItem(disabled("No tokens recorded yet today"))
+        } else {
+            let width = ranked.map { Fmt.longModel($0.model).count }.max() ?? 0
+            for entry in ranked {
+                let name = Fmt.longModel(entry.model).padding(toLength: max(width, 10),
+                                                              withPad: " ", startingAt: 0)
+                let line = "\(name)  \(pad(Fmt.compact(entry.totals.output), 6)) out"
+                    + " · \(pad(Fmt.compact(entry.totals.totalInput), 6)) in"
+                    + " · \(entry.totals.requests) req"
+                menu.addItem(monospaced(line))
+            }
+            menu.addItem(.separator())
+
+            let grand = snapshot.grand
+            menu.addItem(monospaced("Total\(String(repeating: " ", count: max(width, 10) - 5))"
+                + "  \(pad(Fmt.compact(grand.output), 6)) out"
+                + " · \(pad(Fmt.compact(grand.totalInput), 6)) in"
+                + " · \(grand.requests) req"))
+            let hitRate = grand.totalInput > 0
+                ? Double(grand.cacheRead) / Double(grand.totalInput) * 100 : 0
+            menu.addItem(disabled(String(format: "Cache hit rate  %.1f%%", hitRate)))
+
+            var sessionLine = "\(snapshot.sessions.count) session"
+                + (snapshot.sessions.count == 1 ? "" : "s")
+            if !snapshot.liveSessions.isEmpty {
+                sessionLine += " · \(snapshot.liveSessions.count) active now"
+            }
+            menu.addItem(disabled(sessionLine))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(action("Open Dashboard", #selector(openDashboard), key: "d"))
+        menu.addItem(action("Refresh Now", #selector(refreshNow), key: "r"))
+        menu.addItem(.separator())
+
+        let login = action("Open at Login", #selector(toggleLaunchAtLogin), key: "")
+        login.state = launchAtLoginEnabled ? .on : .off
+        menu.addItem(login)
+        menu.addItem(action("Quit Session Stats", #selector(quit), key: "q"))
+    }
+
+    private func pad(_ s: String, _ width: Int) -> String {
+        String(repeating: " ", count: max(0, width - s.count)) + s
+    }
+
+    private func header(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor])
+        return item
+    }
+
+    private func disabled(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: NSColor.secondaryLabelColor])
+        return item
+    }
+
+    private func monospaced(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(string: title, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.labelColor])
+        return item
+    }
+
+    private func action(_ title: String, _ selector: Selector, key: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+        item.target = self
+        return item
+    }
+
+    // MARK: - Actions
+
+    @objc private func refreshNow() { refresh() }
+
+    @objc private func openDashboard() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let problem = Dashboard.open()
+            guard let problem else { return }
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                alert.messageText = "Couldn't open the dashboard"
+                alert.informativeText = problem
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
+
+    @objc private func quit() { NSApp.terminate(nil) }
+
+    // MARK: - Launch at login
+
+    private var launchAtLoginEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if launchAtLoginEnabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Couldn't change the login item"
+            alert.informativeText = error.localizedDescription
+                + "\n\nThis needs the app to live in a stable location — "
+                + "move it to /Applications and try again."
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+        rebuildMenu()
+    }
+}
