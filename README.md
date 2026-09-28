@@ -59,7 +59,7 @@ dependencies — no Python, no packages, no network access.
 ### Distributing
 
 ```bash
-./build.sh --dmg             # → build/Session Stats 1.0.dmg
+./build.sh --dmg             # → build/Session Stats 1.4.dmg
 ./build.sh --install --dmg   # flags combine, in any order
 ```
 

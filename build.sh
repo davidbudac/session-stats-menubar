@@ -27,7 +27,7 @@ done
 
 APP_NAME="Session Stats"
 BUNDLE_ID="com.davidbudac.SessionStatsBar"
-VERSION="1.0"
+VERSION="1.4"
 OUT="build/${APP_NAME}.app"
 IDENTITY="${CODESIGN_IDENTITY:--}"
 
