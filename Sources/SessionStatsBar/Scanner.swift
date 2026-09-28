@@ -30,9 +30,6 @@ final class Scanner {
     private static let liveWindow: TimeInterval = 5 * 60
     /// Days of per-file state kept in memory (today plus a margin for midnight).
     private static let retainDays = 3
-    /// Bytes read per pass. Bounds peak memory on the first, large scan.
-    private static let chunkSize = 1 << 18   // 256 KB
-
     /// What a transcript file is, decided from its path.
     private struct FileRef {
         var isSubagent: Bool
@@ -48,8 +45,7 @@ final class Scanner {
     }
 
     private struct FileState {
-        var offset: UInt64 = 0
-        var partial = Data()
+        var cursor = LineCursor()
         /// Subagent rows carry the *parent* session id, so this groups a
         /// session's main transcript and its agents under one key.
         var sessionID: String?
@@ -204,84 +200,30 @@ final class Scanner {
 
     // MARK: - Transcript ingest
 
-    /// Streams the new bytes of one transcript through a fixed buffer.
-    ///
-    /// This deliberately uses read(2) rather than `FileHandle`/`Data`: handing
-    /// back a fresh `Data` per chunk pushed peak RSS past 140 MB on a 20 MB day,
-    /// which is absurd for a menu bar app. A reused buffer holds it near the
-    /// process baseline.
+    /// Streams the new bytes of one transcript. See `LineReader` for why this
+    /// goes through a fixed read(2) buffer rather than `Data`.
     private func ingest(path: String, isSubagent: Bool, into state: inout FileState) {
-        let fd = open(path, O_RDONLY)
-        guard fd >= 0 else { return }
-        defer { close(fd) }
-
-        let end = lseek(fd, 0, SEEK_END)
-        guard end >= 0 else { return }
-        let size = UInt64(end)
-        if size < state.offset {          // truncated or replaced — start over
+        guard let size = LineReader.size(of: path) else { return }
+        if size < state.cursor.offset {   // truncated or replaced — start over
             state = FileState()
         }
-        guard size > state.offset else { return }
-        guard lseek(fd, off_t(state.offset), SEEK_SET) >= 0 else { return }
+        guard size > state.cursor.offset else { return }
 
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Self.chunkSize)
-        defer { buffer.deallocate() }
-
-        // Carries a line split across chunks — or across passes, since a
-        // transcript's last line may be half-written when we reach it.
-        var pending = [UInt8](state.partial)
-        state.partial = Data()
-
-        while true {
-            let n = read(fd, buffer, Self.chunkSize)
-            guard n > 0 else { break }
-            state.offset += UInt64(n)
-
-            let chunk = UnsafeBufferPointer(start: buffer, count: n)
-            var lineStart = 0
-            for i in 0..<n where chunk[i] == 0x0A {
-                if pending.isEmpty {
-                    consume(line: chunk[lineStart..<i], isSubagent: isSubagent, into: &state)
-                } else {
-                    pending.append(contentsOf: chunk[lineStart..<i])
-                    pending.withUnsafeBufferPointer {
-                        consume(line: $0[...], isSubagent: isSubagent, into: &state)
-                    }
-                    pending.removeAll(keepingCapacity: true)
-                }
-                lineStart = i + 1
-            }
-            if lineStart < n { pending.append(contentsOf: chunk[lineStart..<n]) }
+        var cursor = state.cursor
+        LineReader.readAppended(path: path, cursor: &cursor) { line in
+            consume(line: line, isSubagent: isSubagent, into: &state)
         }
-        state.partial = Data(pending)
+        state.cursor = cursor
     }
 
     private static let assistantMarker = Array(#""type":"assistant""#.utf8)
-
-    /// Substring search over raw bytes — cheaper than materialising a String or
-    /// a Data copy for every line of a multi-megabyte transcript.
-    private static func contains(_ haystack: UnsafeBufferPointer<UInt8>.SubSequence,
-                                 _ needle: [UInt8]) -> Bool {
-        guard haystack.count >= needle.count, let first = needle.first else { return false }
-        let limit = haystack.endIndex - needle.count
-        var i = haystack.startIndex
-        while i <= limit {
-            if haystack[i] == first {
-                var j = 1
-                while j < needle.count, haystack[i + j] == needle[j] { j += 1 }
-                if j == needle.count { return true }
-            }
-            i += 1
-        }
-        return false
-    }
 
     private func consume(line: UnsafeBufferPointer<UInt8>.SubSequence,
                          isSubagent: Bool, into state: inout FileState) {
         guard line.count > 2 else { return }
         // Only assistant rows carry usage; skipping the rest avoids parsing
         // megabytes of tool results on every pass.
-        guard Self.contains(line, Self.assistantMarker) else { return }
+        guard LineReader.contains(line, Self.assistantMarker) else { return }
 
         // One pool per line. A parsed row costs several times its JSON bytes —
         // mostly the `content` blocks we never look at.

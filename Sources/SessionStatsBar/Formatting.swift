@@ -94,4 +94,51 @@ enum Fmt {
         f.formatOptions = [.withInternetDateTime]
         return f
     }()
+
+    /// "just now", "12m ago", "3h ago", "2d ago" — how stale a quota reading is.
+    static func ago(_ date: Date, now: Date = Date()) -> String {
+        let s = max(0, now.timeIntervalSince(date))
+        switch s {
+        case ..<60:        return "just now"
+        case ..<3600:      return "\(Int(s / 60))m ago"
+        case ..<(48 * 3600): return "\(Int(s / 3600))h ago"
+        default:           return "\(Int(s / 86400))d ago"
+        }
+    }
+
+    /// "2h 14m", "45m" — a short span, rounded up so it never reads "0m" early.
+    static func span(_ seconds: TimeInterval) -> String {
+        let minutes = Int((max(0, seconds) / 60).rounded(.up))
+        if minutes < 60 { return "\(minutes)m" }
+        let (h, m) = (minutes / 60, minutes % 60)
+        return m == 0 ? "\(h)h" : "\(h)h \(m)m"
+    }
+
+    /// When a quota window resets. Within a day a countdown is what you want
+    /// ("in 2h 14m"); past that, the weekday reads faster ("Thu 09:12").
+    /// `short` drops "in" and the time of day, for the dropdown's tight rows.
+    static func resets(_ date: Date, now: Date = Date(), short: Bool = false) -> String {
+        let s = date.timeIntervalSince(now)
+        if s < 24 * 3600 { return (short ? "" : "in ") + span(s) }
+        return (short ? weekday : weekdayTime).string(from: date)
+    }
+
+    private static let weekday: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    private static let weekdayTime: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE HH:mm"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    /// "12.5" for fractional percentages, "13" otherwise.
+    static func percent(_ v: Double) -> String {
+        v == v.rounded() ? String(format: "%.0f", v) : String(format: "%.1f", v)
+    }
 }

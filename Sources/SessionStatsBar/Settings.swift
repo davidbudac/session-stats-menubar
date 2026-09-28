@@ -1,6 +1,20 @@
 import Foundation
 
-/// What the menu bar prints for each model.
+/// What sits in the menu bar: quota rings per subscription, or the original
+/// per-model token readout.
+enum MenuBarStyle: String, CaseIterable {
+    case rings
+    case text
+
+    var title: String {
+        switch self {
+        case .rings: return "Rings"
+        case .text:  return "Token text"
+        }
+    }
+}
+
+/// What the menu bar prints for each model, in the `text` style.
 enum MenuBarMetric: String, CaseIterable {
     case output
     case outputAndInput
@@ -36,6 +50,11 @@ enum MenuBarMetric: String, CaseIterable {
 /// stay scriptable with `defaults write`.
 enum Settings {
     private static let store = UserDefaults.standard
+
+    static var menuBarStyle: MenuBarStyle {
+        get { MenuBarStyle(rawValue: store.string(forKey: "menuBarStyle") ?? "") ?? .rings }
+        set { store.set(newValue.rawValue, forKey: "menuBarStyle") }
+    }
 
     static var metric: MenuBarMetric {
         get { MenuBarMetric(rawValue: store.string(forKey: "metric") ?? "") ?? .output }

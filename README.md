@@ -1,6 +1,14 @@
 # Session Stats — macOS menu bar
 
-Today's Claude Code token usage, per model, in the menu bar.
+Your coding subscriptions' remaining quota, and today's Claude Code token usage
+per model, in the menu bar.
+
+By default the menu bar shows three small icons — Claude, Codex, Cursor — each
+inside a ring showing how much of that subscription's quota is **left**. A full
+ring is untouched quota. Hover an icon for its details; click for the dropdown.
+See [Subscription rings](#subscription-rings).
+
+The original text readout is one setting away:
 
 ```
 O5 268k · F5 31k
@@ -33,7 +41,7 @@ say it can't be opened.) Alternatively:
 xattr -dr com.apple.quarantine "/Applications/Session Stats.app"
 ```
 
-There's no Dock icon — look for the token counts in the menu bar. To have it
+There's no Dock icon — look for the three rings in the menu bar. To have it
 come back after a reboot, turn on **Open at Login** in the dropdown.
 
 ### Or build it yourself
@@ -48,9 +56,131 @@ cd session-stats-menubar
 Needs macOS 13+ and a Swift 6 toolchain (Xcode command line tools). No other
 dependencies — no Python, no packages, no network access.
 
+### Distributing
+
+```bash
+./build.sh --dmg             # → build/Session Stats 1.0.dmg
+./build.sh --install --dmg   # flags combine, in any order
+```
+
+`--dmg` builds a universal binary (arm64 + x86_64) and packages the app with
+an Applications shortcut for drag-to-install. Universal builds need full Xcode;
+with only the command line tools the script falls back to your Mac's native
+architecture and says so.
+
+The DMG is ad-hoc signed and not notarized, so recipients have to allow it on
+first launch: **right-click the app → Open**, or **System Settings → Privacy &
+Security → Open Anyway**, or:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Session Stats.app"
+```
+
+If you have a Developer ID certificate, sign with it (hardened runtime is
+enabled automatically; notarization is still up to you):
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh --dmg
+```
+
+## Subscription rings
+
+```
+ (✳)  (>_)  (⬡)        Claude · Codex · Cursor
+```
+
+Each ring's arc is the remaining share of that subscription's **most constrained
+window** — whichever of, say, the 5-hour and 7-day limits has less left. It
+starts at 12 o'clock and runs clockwise over a faint full-circle track.
+
+- **Amber dot** at the top right: the tightest window has 20% or less left.
+- **Red arc**: 5% or less.
+- **Track only, no arc**: no usable reading — nothing recorded yet, or the last
+  reading is more than 8 days old.
+
+Hovering an icon shows that provider on its own:
+
+```
+Claude — as of 2m ago
+5h      25% used · 75% left · resets in 1h 5m
+7d      63% used · 37% left · resets Thu 10:00
+
+Today
+opus-5-5    $119 · 37k out · 167M in
+fable-5-1   $11.1 · 44k out · 2.8M in
+Total       $130 · 81k out · 170M in
+```
+
+The Claude tooltip carries today's per-model spend that the text readout used to
+show. The Codex one shows the plan, its windows, and today's tokens per model —
+without dollars, as there's no Codex price table here and inventing one would be
+worse than none.
+
+### Where each ring comes from
+
+| Provider | Source | Notes |
+|---|---|---|
+| Claude | `~/.claude/session-stats/rate-limits.json` | Written by your statusline script — see [Claude quota setup](#claude-quota-setup). Respects `CLAUDE_CONFIG_DIR`. |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Every `token_count` event carries the account's `rate_limits`; the newest one across all rollouts wins. Respects `CODEX_HOME`. |
+| Cursor | — | No ring. See below. |
+
+Codex rollouts are read the same way as Claude transcripts: incrementally, with
+a per-file byte offset, through the same fixed `read(2)` buffer, and with a raw
+byte prefilter so only `token_count` and `turn_context` lines are parsed. Only
+day folders from the last 8 days are listed; older ones are only stat'ed, since
+a resumed session keeps appending to the rollout in the folder of the day it
+started. Today's Codex tokens are summed from each event's `last_token_usage`
+(Codex's `input_tokens` already includes the cached part), attributed to the
+model of the preceding `turn_context`, skipping the verbatim repeats Codex
+sometimes writes.
+
+**Why Cursor has no ring.** Cursor keeps its usage server-side; nothing on disk
+records it. The only way to get it would be to call Cursor's API with your
+session token, which would mean reading a credential and adding network code —
+both things this app doesn't do. So its icon stays as a reminder, with a track
+and no arc.
+
+### Staleness
+
+A reading is only as fresh as the last time that tool ran. Neither Claude Code
+nor Codex has any way to tell this app about usage elsewhere — on another
+machine, on the web, on your phone — until it runs here again. So:
+
+- A new reading shows within about a second of the tool writing it (file
+  system events; the 30-second poll is the fallback).
+- Tooltips say how old the reading is ("as of 3h ago").
+- If a window's reset time has passed since the reading, it has rolled over:
+  it's counted as 0% used.
+- Readings older than 8 days are shown as unknown.
+
+### Claude quota setup
+
+Claude Code hands its statusline command the session's `rate_limits` on stdin,
+but doesn't write them anywhere. Add this to your statusline script, right after
+it reads stdin into `$input` (requires `jq`):
+
+```bash
+# Snapshot subscription rate limits for the Session Stats menu bar app.
+# Written atomically; skipped when the session carries no rate_limits.
+rl=$(echo "$input" | jq -c 'select(.rate_limits != null) | {captured_at: (now | floor), rate_limits}' 2>/dev/null)
+if [ -n "$rl" ]; then
+    rl_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-stats"
+    mkdir -p "$rl_dir" \
+        && printf '%s\n' "$rl" > "$rl_dir/rate-limits.json.$$" \
+        && mv -f "$rl_dir/rate-limits.json.$$" "$rl_dir/rate-limits.json"
+fi
+```
+
+Until that has run once, the Claude ring shows as unknown.
+
 ## The dropdown
 
 ```
+Subscriptions
+Claude   5h 75% left · resets 1h 5m   |   7d 37% left · resets Thu
+Codex    weekly 99% left · resets Wed · prolite · as of 2d ago
+Cursor   not available locally
+──────────────────────────────────────────────────────────
 Today · 2026-07-25
 opus-5         $31.2 ·   154k out ·  31.8M in
                cache read $15.3 · cache write $11.7 · output $3.85
@@ -78,6 +208,10 @@ Refresh Now           ⌘R
 Open at Login
 Quit Session Stats    ⌘Q
 ```
+
+**Subscriptions** is the rings in words: every window, what's left, and when it
+resets. The reading's age is added once it's more than 15 minutes old. A row
+that would run too wide puts its windows on indented rows beneath it.
 
 The dimmed second line under each model is where that money actually went,
 biggest component first.
@@ -211,6 +345,13 @@ two won't always agree to the token on a day boundary.
 A refresh runs every 30 seconds, and again whenever you open the dropdown. A
 session counts as **active now** if its transcript grew in the last 5 minutes.
 
+The subscription rings don't wait for that poll. One FSEvents stream watches
+`~/.claude/session-stats/` and `~/.codex/sessions/`, so a new quota reading shows
+up within about a second of the tool writing it — at most one refresh a second,
+reading only the quota sources, not the transcripts. The 30-second poll stays as
+the fallback: resets and "as of" ages move with the clock, and a folder that
+doesn't exist yet is picked up on the next tick once it appears.
+
 Reading megabytes of JSON every 30 seconds would be a silly thing to put in a
 menu bar, so it doesn't:
 
@@ -251,6 +392,23 @@ them against the skill:
 "/Applications/Session Stats.app/Contents/MacOS/SessionStatsBar" --print 2026-07-24
 ```
 
+`--subscriptions` prints what's behind the rings: each provider's source, when
+the reading was captured, every window as captured and as it stands now (after
+the reset rule), plan, and today's Codex tokens per model:
+
+```bash
+"/Applications/Session Stats.app/Contents/MacOS/SessionStatsBar" --subscriptions
+```
+
+`--render-icons <file.png>` draws the menu bar image on a light and a dark bar —
+natively at 4x, and pixel-true at 1x and 2x — for real data plus sample states
+(low, critical, unknown). Handy for checking the glyphs after touching the
+drawing code:
+
+```bash
+"/Applications/Session Stats.app/Contents/MacOS/SessionStatsBar" --render-icons /tmp/rings.png
+```
+
 ## Settings
 
 Everything about the menu bar readout is configurable from the **Settings**
@@ -258,10 +416,14 @@ submenu in the dropdown:
 
 | Setting | Options | Default |
 |---|---|---|
+| **Menu bar style** | Rings · Token text | Rings |
 | **Menu bar shows** | Output tokens · Output / total input · Total input · Estimated cost · Requests | Output tokens |
 | **Models in menu bar** | 1 · 2 · 3 · All (the rest collapse into `+N`) | 3 |
 | **Show model labels** | on/off — drop the `O5` / `F5` prefixes for a bare number | on |
 | **Collapse to ⋯** | shrink the item to a single glyph | off |
+
+The middle three shape the token text only, so the submenu lists them only in
+the **Token text** style. Collapsing works in either style.
 
 Models are always ordered by **cost**, whichever metric you display — that ranks
 them by what they actually cost rather than by volume. The dropdown always shows
@@ -281,11 +443,13 @@ find it. Collapsing in place can't land somewhere unreachable.
 
 ### Via `defaults`
 
-The same preferences, for scripting. Keys: `metric` (`output`,
+The same preferences, for scripting. Keys: `menuBarStyle` (`rings`, `text`),
+`metric` (`output`,
 `outputAndInput`, `totalInput`, `cost`, `requests`), `maxModels` (0 = all),
 `showModelLabels`, `collapsed`.
 
 ```bash
+defaults write com.davidbudac.SessionStatsBar menuBarStyle -string text
 defaults write com.davidbudac.SessionStatsBar metric -string cost
 defaults write com.davidbudac.SessionStatsBar maxModels -int 2
 ```
@@ -305,12 +469,18 @@ defaults write com.davidbudac.SessionStatsBar rate_opus-5 -array 5 25
 ```
 
 The skill's environment overrides are respected too: `CLAUDE_CONFIG_DIR` and
-`CLAUDE_SESSION_STATS_LOG`.
+`CLAUDE_SESSION_STATS_LOG`, and Codex's `CODEX_HOME`.
 
 ## Privacy
 
 Everything stays on the machine. The app reads local files, has no network code,
 and the only process it ever starts is `python3 visualize.py`, on your click.
+
+The files it reads: Claude Code's transcripts under `~/.claude/projects/`, the
+skill's `~/.claude/session-stats/` log and the `rate-limits.json` snapshot, and
+Codex's session logs under `~/.codex/sessions/`. It never opens a credential —
+not `~/.codex/auth.json`, not the Keychain, not Cursor's state database. That's
+also why Cursor has no ring: its quota lives only behind an authenticated API.
 
 ## License
 

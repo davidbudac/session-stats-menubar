@@ -9,9 +9,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The scanner does file I/O and is not thread-safe; it lives only here.
     private let scanQueue = DispatchQueue(label: "sessionstats.scan", qos: .utility)
     private let scanner = Scanner()
+    private let subscriptions = Subscriptions()
     private var scanning = false
+    /// A quota file changed while a refresh was already in flight.
+    private var quotaStale = false
+    private lazy var watcher = FileWatcher { [weak self] in self?.refresh(quotaOnly: true) }
 
     private var snapshot = DaySnapshot(day: Fmt.localDay(Date()))
+    private var subs = SubscriptionSnapshot()
+    /// Answers hover on each ring. Held strongly: tooltip owners aren't retained.
+    private let ringTooltips = RingTooltipOwner()
 
     private static let refreshInterval: TimeInterval = 30
 
@@ -25,27 +32,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
 
+        ringTooltips.text = { [weak self] provider in
+            guard let self else { return "" }
+            return QuotaText.tooltip(provider, subs: self.subs, day: self.snapshot)
+        }
+        // Per-ring tooltip rects are in button coordinates, so they go stale
+        // whenever the item resizes (a longer title elsewhere, a style switch).
+        if let button = statusItem.button {
+            button.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: button, queue: .main
+            ) { [weak self] _ in self?.installRingTooltips() }
+        }
+
         rebuildMenu()
         refresh()
+        watcher.update()
+        // Still needed with the watcher: resets and "as of" ages move with the
+        // clock, and a source folder that appears later is picked up here.
         timer = Timer.scheduledTimer(withTimeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
             self?.refresh()
+            self?.watcher.update()
         }
         timer?.tolerance = 5
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        watcher.stop()
+    }
+
     // MARK: - Refresh
 
-    private func refresh() {
-        guard !scanning else { return }   // a slow first pass must not pile up
+    /// `quotaOnly` skips the transcript scan — what the file watcher wants,
+    /// since only the quota sources are watched.
+    private func refresh(quotaOnly: Bool = false) {
+        guard !scanning else {   // a slow first pass must not pile up
+            // What's in flight may have read the quota files before this change.
+            if quotaOnly { quotaStale = true }
+            return
+        }
         scanning = true
         scanQueue.async { [weak self] in
             guard let self else { return }
-            let snap = self.scanner.snapshot()
+            let snap = quotaOnly ? nil : self.scanner.snapshot()
+            let subs = self.subscriptions.snapshot()
             DispatchQueue.main.async {
                 self.scanning = false
-                self.snapshot = snap
+                if let snap { self.snapshot = snap }
+                self.subs = subs
                 self.updateTitle()
                 self.rebuildMenu()
+                if self.quotaStale {
+                    self.quotaStale = false
+                    self.refresh(quotaOnly: true)
+                }
             }
         }
     }
@@ -55,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let ranked = snapshot.ranked
+        // Every path below sets its own tooltip; stale per-ring rects must not
+        // outlive a switch to collapsed or text.
+        button.removeAllToolTips()
 
         // Collapsed state shrinks this item to a single glyph rather than adding
         // a second status item to toggle visibility. A second item gets placed
@@ -63,6 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // invisible. Collapsing in place can't land somewhere unreachable, and
         // clicking still opens the menu, so the setting is always recoverable.
         if Settings.collapsed {
+            button.image = nil
+            button.imagePosition = .noImage   // .imageOnly would hide the title
             button.attributedTitle = NSAttributedString(
                 string: "⋯",
                 attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
@@ -73,6 +118,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     + "\(Fmt.full(snapshot.grand.output)) output — click for detail"
             return
         }
+
+        if Settings.menuBarStyle == .rings {
+            showRings(on: button)
+            return
+        }
+        button.image = nil
+        button.imagePosition = .noImage
 
         guard !ranked.isEmpty else {
             button.attributedTitle = NSAttributedString(
@@ -125,6 +177,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             + "across \(snapshot.sessions.count) session(s)"
     }
 
+    // MARK: - Rings
+
+    private func showRings(on button: NSStatusBarButton) {
+        let now = Date()
+        button.attributedTitle = NSAttributedString(string: "")
+        button.toolTip = nil
+        button.image = RingIcons.image(Provider.allCases.map { RingIcons.Face(subs.quota(for: $0), now: now) })
+        button.imagePosition = .imageOnly
+        installRingTooltips()
+    }
+
+    /// One tooltip rect per ring, so hovering Codex tells you about Codex. The
+    /// button centres its image, so the rects are laid out from the same centre;
+    /// the outer two stretch to the button's edges so there's no dead margin.
+    private func installRingTooltips() {
+        guard let button = statusItem.button, let image = button.image,
+              !Settings.collapsed, Settings.menuBarStyle == .rings else { return }
+        button.removeAllToolTips()
+        let bounds = button.bounds
+        let originX = bounds.minX + (bounds.width - image.size.width) / 2
+        let slots = RingIcons.slots(count: Provider.allCases.count)
+        for (index, slot) in slots.enumerated() {
+            let minX = index == 0 ? bounds.minX : originX + slot.lowerBound - RingIcons.gap / 2
+            let maxX = index == slots.count - 1
+                ? bounds.maxX : originX + slot.upperBound + RingIcons.gap / 2
+            button.addToolTip(NSRect(x: minX, y: bounds.minY, width: maxX - minX,
+                                     height: bounds.height),
+                              owner: ringTooltips, userData: RingTooltipOwner.userData(index))
+        }
+    }
+
     // MARK: - Dropdown
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
@@ -132,6 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rebuildMenu() {
         menu.removeAllItems()
 
+        addSubscriptions()
         menu.addItem(header("Today · \(snapshot.day)"))
 
         let ranked = snapshot.ranked
@@ -234,6 +318,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if hidden > 0 { menu.addItem(indented("+\(hidden) more session(s)", by: 2)) }
     }
 
+    /// One row per provider. A row that would run wider than the rest of the
+    /// menu is split, windows going on indented rows beneath it.
+    private func addSubscriptions() {
+        let now = Date()
+        menu.addItem(header("Subscriptions"))
+        for provider in Provider.allCases {
+            let quota = subs.quota(for: provider)
+            let name = provider.title.padding(toLength: 8, withPad: " ", startingAt: 0)
+            if provider == .cursor {
+                menu.addItem(monospaced("\(name) not available locally"))
+                continue
+            }
+            if let why = QuotaText.unavailable(quota, now: now) {
+                menu.addItem(monospaced("\(name) \(why)"))
+                continue
+            }
+            let windows = quota.windows.map { w -> String in
+                var part = "\(w.name) \(Fmt.percent(100 - w.used(at: now)))% left"
+                if w.hasReset(at: now) {
+                    part += " · reset since"
+                } else if let at = w.resetsAt {
+                    part += " · resets \(Fmt.resets(at, now: now, short: true))"
+                }
+                return part
+            }
+            var extras: [String] = []
+            if let plan = quota.plan { extras.append(plan) }
+            // Age only earns space once it's old enough to change how you read it.
+            if let at = quota.capturedAt, now.timeIntervalSince(at) > 15 * 60 {
+                extras.append("as of \(Fmt.ago(at, now: now))")
+            }
+            let single = "\(name) " + windows.joined(separator: "   |   ")
+                + extras.map { " · \($0)" }.joined()
+            if single.count <= Self.maxSubscriptionRow {
+                menu.addItem(monospaced(single))
+            } else {
+                menu.addItem(monospaced("\(name) " + (extras.isEmpty
+                    ? "\(windows.count) windows" : extras.joined(separator: " · "))))
+                for w in windows { menu.addItem(indented(w, by: 9)) }
+            }
+        }
+        menu.addItem(.separator())
+    }
+
+    private static let maxSubscriptionRow = 72
     private static let maxLiveSessions = 4
     private static let maxAgentsPerSession = 6
 
@@ -242,6 +371,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildSettingsMenu() -> NSMenu {
         let sub = NSMenu()
 
+        sub.addItem(header("Menu bar style"))
+        for style in MenuBarStyle.allCases {
+            let item = NSMenuItem(title: style.title, action: #selector(setMenuBarStyle(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = style.rawValue
+            item.state = Settings.menuBarStyle == style ? .on : .off
+            sub.addItem(item)
+        }
+        sub.addItem(.separator())
+
+        // These only shape the token text, so the rings style leaves them out
+        // rather than offering switches that visibly do nothing.
+        if Settings.menuBarStyle == .text { addTextSettings(to: sub) }
+
+        let collapse = NSMenuItem(title: "Collapse to ⋯",
+                                  action: #selector(toggleCollapsed), keyEquivalent: "")
+        collapse.target = self
+        collapse.state = Settings.collapsed ? .on : .off
+        collapse.toolTip = "Shrink the menu bar item to a single glyph. "
+            + "Clicking it still opens this menu."
+        sub.addItem(collapse)
+        return sub
+    }
+
+    private func addTextSettings(to sub: NSMenu) {
         sub.addItem(header("Menu bar shows"))
         for metric in MenuBarMetric.allCases {
             let item = NSMenuItem(title: metric.title, action: #selector(setMetric(_:)),
@@ -269,15 +424,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         labels.target = self
         labels.state = Settings.showModelLabels ? .on : .off
         sub.addItem(labels)
+    }
 
-        let collapse = NSMenuItem(title: "Collapse to ⋯",
-                                  action: #selector(toggleCollapsed), keyEquivalent: "")
-        collapse.target = self
-        collapse.state = Settings.collapsed ? .on : .off
-        collapse.toolTip = "Shrink the menu bar item to a single glyph. "
-            + "Clicking it still opens this menu."
-        sub.addItem(collapse)
-        return sub
+    @objc private func setMenuBarStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let style = MenuBarStyle(rawValue: raw) else { return }
+        Settings.menuBarStyle = style
+        applySettings()
     }
 
     @objc private func setMetric(_ sender: NSMenuItem) {
