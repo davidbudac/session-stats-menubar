@@ -1,10 +1,11 @@
 import AppKit
 
-/// The menu bar's ring readout: one small brand glyph per subscription, each
-/// inside a ring showing how much quota is *left* — a full ring is untouched.
+/// The menu bar's ring readout: one ring per subscription showing how much
+/// quota is *left* — a full ring is untouched — with that percentage inside.
+/// Providers are told apart by colour.
 ///
-/// Everything is drawn with `NSBezierPath`. `build.sh` ships only the binary,
-/// so there are no asset files to lean on, and paths stay crisp at any scale.
+/// Everything is drawn in code — rings with `NSBezierPath`, the number as text.
+/// `build.sh` ships only the binary, so there are no asset files to lean on.
 enum RingIcons {
     static let diameter: CGFloat = 18
     static let gap: CGFloat = 5
@@ -14,7 +15,7 @@ enum RingIcons {
     /// `--render-icons` check can draw states the real data isn't in.
     struct Face {
         var provider: Provider
-        /// Remaining fraction of the tightest window; nil = unknown, no arc.
+        /// Remaining fraction of the weekly window (see `ringWindow`); nil = unknown, no arc.
         var remaining: Double?
         var level: ProviderQuota.Level
 
@@ -94,7 +95,7 @@ enum RingIcons {
             arc.stroke()
         }
 
-        drawGlyph(face.provider, center: center)
+        drawPercent(face, center: center, ctx: ctx)
 
         if badge {
             ctx.setBlendMode(.clear)
@@ -113,71 +114,40 @@ enum RingIcons {
         NSRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)
     }
 
-    private static func drawGlyph(_ provider: Provider, center c: NSPoint) {
-        switch provider {
-        case .claude: starburst(c)
-        case .cursor: cube(c)
-        case .codex:  prompt(c)
+    /// Percent left, digits only — there's no room for a "%" in a 14pt hole.
+    /// Whole numbers, so it matches the tooltip's "% left" unless that shows a
+    /// fractional reading (e.g. "12.5"). Unknown is a dash.
+    private static func drawPercent(_ face: Face, center c: NSPoint, ctx: CGContext) {
+        let text: String
+        let color: NSColor
+        if let left = face.remaining {
+            text = String(Int(min(max((left * 100).rounded(), 0), 100)))
+            color = face.level == .critical ? .systemRed : tint(face.provider)
+        } else {
+            text = "–"
+            color = NSColor.labelColor.withAlphaComponent(0.45)
         }
-    }
+        // Three digits only happen at 100; they get a smaller, tighter setting.
+        let wide = text.count > 2
+        let size: CGFloat = wide ? 6.4 : 8
+        let base = NSFont.monospacedDigitSystemFont(ofSize: size, weight: .bold)
+        let font = base.fontDescriptor.withDesign(.rounded)
+            .flatMap { NSFont(descriptor: $0, size: size) } ?? base
+        let string = NSAttributedString(string: text, attributes: [
+            .font: font, .foregroundColor: color, .kern: wide ? -0.35 : 0,
+        ])
 
-    /// Claude's mark: tapered rays of slightly uneven length, like the logo.
-    private static func starburst(_ c: NSPoint) {
-        tint(.claude).setFill()
-        let rays = 10
-        let path = NSBezierPath()
-        for i in 0..<rays {
-            let angle = CGFloat(i) / CGFloat(rays) * 2 * .pi + .pi / 2
-            let length: CGFloat = i % 2 == 0 ? 4.9 : 4.1
-            let halfWidth: CGFloat = 0.62
-            let dir = NSPoint(x: cos(angle), y: sin(angle))
-            let normal = NSPoint(x: -dir.y, y: dir.x)
-            let base = NSPoint(x: c.x + dir.x * 0.9, y: c.y + dir.y * 0.9)
-            path.move(to: NSPoint(x: base.x + normal.x * halfWidth, y: base.y + normal.y * halfWidth))
-            path.line(to: NSPoint(x: c.x + dir.x * length, y: c.y + dir.y * length))
-            path.line(to: NSPoint(x: base.x - normal.x * halfWidth, y: base.y - normal.y * halfWidth))
-            path.close()
-        }
-        path.append(NSBezierPath(ovalIn: circle(c, 1.25)))
-        path.fill()
-    }
-
-    /// Cursor's mark: an isometric cube — a hexagon outline and the three inner
-    /// edges meeting in the middle.
-    private static func cube(_ c: NSPoint) {
-        let r: CGFloat = 4.7
-        func vertex(_ degrees: CGFloat) -> NSPoint {
-            let a = degrees * .pi / 180
-            return NSPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
-        }
-        let path = NSBezierPath()
-        path.move(to: vertex(90))
-        for d in stride(from: 30, through: -210, by: -60) { path.line(to: vertex(CGFloat(d))) }
-        path.close()
-        for d: CGFloat in [30, 150, -90] {
-            path.move(to: c)
-            path.line(to: vertex(d))
-        }
-        path.lineWidth = 1.1
-        path.lineJoinStyle = .round
-        path.lineCapStyle = .round
-        tint(.cursor).setStroke()
-        path.stroke()
-    }
-
-    /// Codex's mark: a terminal prompt, ">_".
-    private static func prompt(_ c: NSPoint) {
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: c.x - 4.0, y: c.y + 3.2))
-        path.line(to: NSPoint(x: c.x - 0.6, y: c.y))
-        path.line(to: NSPoint(x: c.x - 4.0, y: c.y - 3.2))
-        path.move(to: NSPoint(x: c.x + 0.9, y: c.y - 3.3))
-        path.line(to: NSPoint(x: c.x + 4.3, y: c.y - 3.3))
-        path.lineWidth = 1.5
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        tint(.codex).setStroke()
-        path.stroke()
+        // Centre on the ink, not the line box: digits sit on the baseline and
+        // rise to the cap height. Set with Core Text at an explicit baseline,
+        // snapped to device pixels so the digits don't straddle rows at 1x.
+        let line = CTLineCreateWithAttributedString(string)
+        let width = CTLineGetTypographicBounds(line, nil, nil, nil) + (wide ? 0.35 : 0)
+        let ink = text == "–" ? font.xHeight : font.capHeight
+        let scale = max(ctx.userSpaceToDeviceSpaceTransform.a.magnitude, 1)
+        func snap(_ v: CGFloat) -> CGFloat { (v * scale).rounded() / scale }
+        ctx.textMatrix = .identity
+        ctx.textPosition = CGPoint(x: snap(c.x - width / 2), y: snap(c.y - ink / 2))
+        CTLineDraw(line, ctx)
     }
 
     // MARK: - Colours

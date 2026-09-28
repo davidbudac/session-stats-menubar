@@ -19,6 +19,9 @@ struct QuotaWindow: Sendable {
     /// Percent used when the snapshot was taken, 0–100.
     var usedPercent: Double
     var resetsAt: Date?
+    /// The account-wide 7-day window — the one the ring shows. Set from the
+    /// source's own key or length, never inferred from `name`.
+    var isWeekly = false
 
     /// A snapshot is only as fresh as the last time its tool ran. If the window
     /// has rolled over since, whatever was used then no longer counts.
@@ -55,15 +58,18 @@ struct ProviderQuota: Sendable {
         return now.timeIntervalSince(capturedAt) <= Self.maxAge
     }
 
-    /// The window with the least left — the one that will stop you first.
-    func mostConstrained(at now: Date) -> QuotaWindow? {
+    /// The window the ring shows: the weekly one. A provider that reports no
+    /// weekly window falls back to whichever window has the least left, so the
+    /// ring isn't blank. The 5h window lives in the tooltip and the dropdown.
+    func ringWindow(at now: Date) -> QuotaWindow? {
         guard isFresh(at: now) else { return nil }
-        return windows.min { $0.remaining(at: now) < $1.remaining(at: now) }
+        return windows.first(where: \.isWeekly)
+            ?? windows.min { $0.remaining(at: now) < $1.remaining(at: now) }
     }
 
     /// Ring fill. Nil means "don't know", which is drawn differently from empty.
     func remaining(at now: Date) -> Double? {
-        mostConstrained(at: now)?.remaining(at: now)
+        ringWindow(at: now)?.remaining(at: now)
     }
 
     func level(at now: Date) -> Level {
@@ -169,7 +175,8 @@ enum ClaudeQuotaReader {
             guard let entry = limits[key] as? [String: Any],
                   let used = (entry["used_percentage"] as? NSNumber)?.doubleValue else { continue }
             quota.windows.append(QuotaWindow(name: label(key), usedPercent: used,
-                                             resetsAt: date(entry["resets_at"])))
+                                             resetsAt: date(entry["resets_at"]),
+                                             isWeekly: key == "seven_day"))
         }
         return quota
     }
@@ -350,7 +357,8 @@ final class CodexReader {
                       let used = (w["used_percent"] as? NSNumber)?.doubleValue else { return nil }
                 let minutes = (w["window_minutes"] as? NSNumber)?.intValue
                 return QuotaWindow(name: minutes.map(windowLabel) ?? key, usedPercent: used,
-                                   resetsAt: ClaudeQuotaReader.date(w["resets_at"]))
+                                   resetsAt: ClaudeQuotaReader.date(w["resets_at"]),
+                                   isWeekly: minutes == 10080)
             }
             if !windows.isEmpty, ts >= (state.latest?.at ?? .distantPast) {
                 state.latest = Reading(at: ts, windows: windows,

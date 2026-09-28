@@ -3,9 +3,10 @@
 Your coding subscriptions' remaining quota, and today's Claude Code token usage
 per model, in the menu bar.
 
-By default the menu bar shows three small icons — Claude, Codex, Cursor — each
-inside a ring showing how much of that subscription's quota is **left**. A full
-ring is untouched quota. Hover an icon for its details; click for the dropdown.
+By default the menu bar shows three small rings — Claude, Codex, Cursor, told
+apart by colour — each showing how much of that subscription's quota is
+**left**, with that percentage as a number inside. A full ring is untouched
+quota. Hover a ring for its details; click for the dropdown.
 See [Subscription rings](#subscription-rings).
 
 The original text readout is one setting away:
@@ -86,19 +87,23 @@ CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh --dm
 ## Subscription rings
 
 ```
- (✳)  (>_)  (⬡)        Claude · Codex · Cursor
+ (81)  (88)  (–)        Claude (orange) · Codex (indigo) · Cursor (plain)
 ```
 
-Each ring's arc is the remaining share of that subscription's **most constrained
-window** — whichever of, say, the 5-hour and 7-day limits has less left. It
-starts at 12 o'clock and runs clockwise over a faint full-circle track.
+Each ring's arc is the remaining share of that subscription's **weekly (7-day)
+window**. It starts at 12 o'clock and runs clockwise over a faint full-circle
+track. The number inside is the same thing in figures: percent left, rounded.
+The 5-hour window isn't on the ring — it's in the hover tooltip and the
+dropdown — so a ring can look healthy while the 5-hour window is used up. A
+provider that reports no weekly window falls back to whichever window has the
+least left.
 
-- **Amber dot** at the top right: the tightest window has 20% or less left.
-- **Red arc**: 5% or less.
-- **Track only, no arc**: no usable reading — nothing recorded yet, or the last
-  reading is more than 8 days old.
+- **Amber dot** at the top right: the weekly window has 20% or less left.
+- **Red arc and number**: 5% or less.
+- **Track only, no arc, a dash inside**: no usable reading — nothing recorded
+  yet, or the last reading is more than 8 days old.
 
-Hovering an icon shows that provider on its own:
+Hovering a ring shows that provider on its own:
 
 ```
 Claude — as of 2m ago
@@ -137,8 +142,8 @@ sometimes writes.
 **Why Cursor has no ring.** Cursor keeps its usage server-side; nothing on disk
 records it. The only way to get it would be to call Cursor's API with your
 session token, which would mean reading a credential and adding network code —
-both things this app doesn't do. So its icon stays as a reminder, with a track
-and no arc.
+both things this app doesn't do. So its ring stays as a reminder, with a track,
+no arc and a dash.
 
 ### Staleness
 
@@ -394,7 +399,8 @@ them against the skill:
 
 `--subscriptions` prints what's behind the rings: each provider's source, when
 the reading was captured, every window as captured and as it stands now (after
-the reset rule), plan, and today's Codex tokens per model:
+the reset rule), plan, the ring and which window it shows, and today's Codex
+tokens per model:
 
 ```bash
 "/Applications/Session Stats.app/Contents/MacOS/SessionStatsBar" --subscriptions
@@ -402,7 +408,7 @@ the reset rule), plan, and today's Codex tokens per model:
 
 `--render-icons <file.png>` draws the menu bar image on a light and a dark bar —
 natively at 4x, and pixel-true at 1x and 2x — for real data plus sample states
-(low, critical, unknown). Handy for checking the glyphs after touching the
+(low, critical, unknown). Handy for checking the rings after touching the
 drawing code:
 
 ```bash

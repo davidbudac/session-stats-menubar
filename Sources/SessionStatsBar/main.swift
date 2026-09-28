@@ -50,7 +50,8 @@ if args.contains("--subscriptions") {
             print(line)
         }
         let ring = q.remaining(at: now).map { "\(Fmt.percent(($0 * 1000).rounded() / 10))% left" } ?? "unknown"
-        print("  ring       \(ring) · \(q.level(at: now))")
+        print("  ring       \(ring) · \(q.level(at: now))"
+              + (q.ringWindow(at: now).map { "  (\($0.name))" } ?? ""))
     }
     print("\nCodex today (\(Fmt.localDay(now)))")
     if subs.codexToday.isEmpty { print("  nothing recorded") }
